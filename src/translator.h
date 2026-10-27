@@ -3,73 +3,50 @@
 
 #pragma once
 
-#include <string>
+#include "config.h"
 
-#ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
-#endif
+
+#include <deque>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <utility>
 
 namespace live {
 
-struct TranslateResult {
-    std::string translated;
-    std::string error;
-    bool success = false;
-};
+/// Earlier (source, translation) pairs, oldest first; OpenAI gets them as context.
+using History = std::deque<std::pair<std::string, std::string>>;
 
-enum class TranslatorEngine {
-    GPT,
-    DeepL,
-    Google,
-    None,
-};
-
-/**
- * Translation via HTTP APIs — uses WinHTTP (native Windows, no Qt).
- * Supports: OpenAI GPT, DeepL, Google Cloud Translation.
- */
+/// OpenAI, DeepL and Google Cloud Translation over WinHTTP. translate() runs on
+/// the worker thread; cancel() may be called from any thread.
 class Translator {
 public:
+    Translator();
     ~Translator();
+    Translator(const Translator&) = delete;
+    Translator& operator=(const Translator&) = delete;
 
-    void setEngine(TranslatorEngine engine) { m_engine = engine; }
-    void setApiKey(const std::string& key) { m_apiKey = key; }
-    void setSourceLang(const std::string& lang) { m_srcLang = lang; }
-    void setTargetLang(const std::string& lang) { m_tgtLang = lang; }
-    void setModel(const std::string& model) { m_model = model; }
-    void setContext(const std::string& ctx) { m_context = ctx; }
+    /// The translation, or nullopt with a message for the user in `error`.
+    std::optional<std::string> translate(const Config& cfg, const std::string& text, const History& history,
+                                         std::string& error);
 
-    TranslateResult translate(const std::string& text);
-
-    TranslatorEngine engine() const { return m_engine; }
-    std::string lastError() const { return m_error; }
+    /// Aborts the request in flight and refuses new ones.
+    void cancel();
 
 private:
-    TranslateResult translateGPT(const std::string& text);
-    TranslateResult translateDeepL(const std::string& text);
-    TranslateResult translateGoogle(const std::string& text);
+    struct Response {
+        DWORD status = 0;
+        std::string body;
+    };
+    std::optional<Response> post(const wchar_t* host, const wchar_t* path, const std::wstring& headers,
+                                 const std::string& body, std::string& error);
 
-    // Persistent WinHTTP session — reused across calls (~100ms saved per request)
-    std::string httpPost(const std::string& host, const std::string& path,
-                         const std::string& body, const std::string& authHeader,
-                         const std::string& contentType = "application/json");
-    void ensureSession();
-    void closeSession();
-
-    TranslatorEngine m_engine = TranslatorEngine::GPT;
-    std::string m_apiKey;
-    std::string m_srcLang = "en";
-    std::string m_tgtLang = "tr";
-    std::string m_model = "gpt-4o-mini";
-    std::string m_error;
-    std::string m_context;  // Translation context for GPT (game terminology consistency)
-
-#ifdef _WIN32
-    HINTERNET m_hSession = nullptr;  // Persistent session handle
-    HINTERNET m_hConnect = nullptr;  // Persistent connection handle
-    std::string m_lastHost;          // Track host for connection reuse
-#endif
+    HINTERNET m_session = nullptr;
+    std::mutex m_mutex;           // guards the two below
+    HINTERNET m_request = nullptr;
+    bool m_cancelled = false;
 };
 
 } // namespace live

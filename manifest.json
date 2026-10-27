@@ -1,79 +1,60 @@
 {
-    "id": "com.makineceviri.live",
-    "name": "Makine Live",
-    "version": "0.1.0",
-    "apiVersion": 1,
-    "category": "translation",
-    "description": "Real-time screen OCR and translation overlay with DXGI capture and multi-engine translation",
-    "author": "Makine Team",
-    "license": "AGPL-3.0-only WITH Commons-Clause",
-    "homepage": "https://github.com/MakineCeviri/Makine-LauncherPlugin-Live",
-    "entry": "makine-live.dll",
-    "dependencies": [],
-    "capabilities": ["network", "screen_capture", "overlay"],
-    "features": [
-        "Screen capture (DXGI Desktop Duplication / GDI fallback)",
-        "OCR text recognition (RapidOCR)",
-        "Translation engines (Google, DeepL, ChatGPT)",
-        "Transparent overlay window",
-        "Frame change detection for efficient OCR"
-    ],
-    "platforms": ["win64"],
-    "minLauncherVersion": "0.2.0",
+  "schema": 2,
+  "id": "org.makineceviri.live",
+  "name": "Makine Live",
+  "version": "0.2.0",
+  "description": "Oyun ekranında seçtiğin bölgedeki İngilizce metni okur (OCR), çevirir ve oyunun üstünde gösterir.",
+  "publisher": "Makine Çeviri",
+  "license": "AGPL-3.0-only WITH Commons-Clause",
+  "homepage": "https://github.com/MakineCeviri/Makine-LauncherPlugin-Live",
+  "abi": 2,
+  "minLauncher": "0.2.0",
+  "entry": "bin/makine-live.dll",
+  "capabilities": [
+    { "id": "screen-capture", "reason": "Seçtiğin ekran bölgesini okur. Görüntü bilgisayarından çıkmaz; yalnız içinden okunan metin kullanılır." },
+    { "id": "network", "reason": "Okunan metni seçtiğin çeviri servisine (OpenAI, DeepL ya da Google) gönderir." },
+    { "id": "overlay", "reason": "Çeviriyi oyunun üstünde gösterir ve okunacak bölgeyi seçtirir." }
+  ],
+  "contributes": {
     "settings": [
-        {
-            "key": "ocrEnabled",
-            "type": "toggle",
-            "label": "OCR Aktif",
-            "default": "false"
-        },
-        {
-            "key": "sourceLang",
-            "type": "select",
-            "label": "Kaynak Dil",
-            "options": ["en", "ja", "ko", "zh", "de", "fr", "es", "ru"],
-            "default": "en"
-        },
-        {
-            "key": "targetLang",
-            "type": "select",
-            "label": "Hedef Dil",
-            "options": ["tr", "en", "de", "fr", "es", "ru"],
-            "default": "tr"
-        },
-        {
-            "key": "translatorEngine",
-            "type": "select",
-            "label": "Ceviri Motoru",
-            "options": ["gpt", "deepl", "google"],
-            "default": "gpt"
-        },
-        {
-            "key": "apiKey",
-            "type": "text",
-            "label": "API Anahtari",
-            "default": ""
-        },
-        {
-            "key": "gptModel",
-            "type": "select",
-            "label": "GPT Model",
-            "options": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
-            "default": "gpt-4o-mini"
-        },
-        {
-            "key": "captureMethod",
-            "type": "select",
-            "label": "Yakalama Yontemi",
-            "options": ["auto", "dxgi", "gdi"],
-            "default": "auto"
-        },
-        {
-            "key": "ocrInterval",
-            "type": "select",
-            "label": "OCR Araligi (ms)",
-            "options": ["500", "1000", "2000", "3000", "5000"],
-            "default": "2000"
-        }
-    ]
+      { "key": "provider", "type": "select", "label": "Çeviri servisi",
+        "options": [
+          { "value": "openai", "label": "OpenAI" },
+          { "value": "deepl", "label": "DeepL" },
+          { "value": "google", "label": "Google Cloud Translation" }
+        ],
+        "default": "openai" },
+      { "key": "apiKey", "type": "secret", "label": "API anahtarı",
+        "description": "Seçili servisin anahtarı. Windows'ta şifreli saklanır." },
+      { "key": "model", "type": "text", "label": "OpenAI modeli",
+        "description": "Yalnız OpenAI için.", "default": "gpt-4.1-mini" },
+      { "key": "sourceLang", "type": "select", "label": "Kaynak dil",
+        "description": "OCR modeli şimdilik yalnız İngilizce metni okur.",
+        "options": [ { "value": "en", "label": "İngilizce" } ],
+        "default": "en" },
+      { "key": "targetLang", "type": "select", "label": "Hedef dil",
+        "options": [
+          { "value": "tr", "label": "Türkçe" },
+          { "value": "en", "label": "İngilizce" },
+          { "value": "de", "label": "Almanca" },
+          { "value": "fr", "label": "Fransızca" },
+          { "value": "es", "label": "İspanyolca" },
+          { "value": "ru", "label": "Rusça" }
+        ],
+        "default": "tr" },
+      { "key": "interval", "type": "number", "label": "Okuma aralığı (ms)",
+        "description": "Ekran ne sıklıkla okunsun. Değişmeyen ekran yeniden okunmaz.",
+        "min": 250, "max": 10000, "default": 1000 },
+      { "key": "showSource", "type": "toggle", "label": "Özgün metni de göster", "default": false },
+      { "key": "autoStart", "type": "toggle", "label": "Oyun açılınca başlat",
+        "description": "Kayıtlı bir bölge varsa oyun başlayınca okumaya başlar.", "default": false }
+    ],
+    "actions": [
+      { "id": "pickRegion", "label": "Bölge seç", "description": "Ekranda okunacak alanı seçer" },
+      { "id": "start", "label": "Başlat", "description": "Seçili bölgeyi okuyup çevirmeye başlar" },
+      { "id": "stop", "label": "Durdur" },
+      { "id": "readOnce", "label": "Bölgeyi oku (test)", "description": "Bölgedeki metni çevirmeden bir kez okur" }
+    ],
+    "events": [ "game.started", "game.stopped", "settings.changed" ]
+  }
 }

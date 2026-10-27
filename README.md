@@ -1,109 +1,126 @@
 # Makine Live
 
-> Gerçek zamanlı ekran OCR ve çeviri overlay eklentisi — Makine Launcher için.
+> Oyun ekranındaki İngilizce metni okur, çevirir ve oyunun üstünde gösterir — [Makine Launcher](https://github.com/MakineCeviri/Makine-Launcher) eklentisi.
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0 + Commons Clause](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
 
-Bu eklenti, açık kaynak kodlu **[Makine Launcher](https://github.com/MakineCeviri/Makine-Launcher)** uygulamasının resmi eklentisidir. Makine Launcher, Türkçe oyun çeviri paketlerini yöneten ücretsiz bir masaüstü uygulamasıdır.
-
-## Ozellikler
-
-- **Ekran Yakalama** -- DXGI Desktop Duplication (~5ms, fullscreen oyun destegi) + GDI fallback
-- **OCR Metin Tanima** -- RapidOCR (PaddleOCR + ONNX Runtime) ile yuksek dogruluk
-- **Ceviri Motorlari** -- ChatGPT, DeepL, Google Translate (WinHTTP native)
-- **Seffaf Overlay** -- Ceviriyi oyun ustunde frameless pencere ile gosterir
-- **Akilli Pipeline** -- 6 katmanli optimizasyon:
-  1. DXGI capture (~5ms)
-  2. Frame hash ile degisiklik algilama
-  3. Fuzzy text matching (Levenshtein <%10 -> cache)
-  4. Translation LRU cache (200 girdi)
-  5. Context-aware GPT (onceki 5 ceviri baglam olarak gider)
-  6. Adaptive timer (aktif: 200ms, sabit: 2000ms)
-
-## Nasil Calisir
-
-```
-Ekran -> [DXGI/GDI] -> [Frame Hash] -> [RapidOCR] -> [Cache?] -> [GPT/DeepL/Google] -> Overlay
-            5ms          ~0ms          ~100ms        ~0ms        ~200ms
-```
+Türkçe yaması olmayan bir oyunda diyalogların ya da menülerin geçtiği ekran bölgesini bir kez seçersin; Makine Live o bölgeyi düzenli aralıklarla okur (OCR), metni seçtiğin çeviri servisine gönderir ve çeviriyi bölgenin hemen altında gösterir.
 
 ## Kurulum
 
-### Makine Launcher uzerinden (onerilen)
-1. Ayarlar -> Eklentiler -> **Makine Live** -> **Kur**
-2. Eklentiyi etkinlestir
-3. API anahtarini gir (GPT, DeepL veya Google)
-4. Bolge sec -> OCR Baslat
+Makine **0.2.0** ya da daha yenisi gerekir.
 
-### Elle kurulum
-1. [Releases](https://github.com/MakineCeviri/Makine-LauncherPlugin-Live/releases) sayfasindan `.makine` dosyasini indirin
-2. Launcher -> Eklentiler -> **Dosya Sec** ile `.makine` dosyasini yukleyin
+1. Makine → **Ayarlar → Eklentiler → Makine Live → Kur**
+2. Kurulumda istenen izinleri onayla (aşağıda).
+3. Eklenti ayarlarından çeviri servisini seç ve API anahtarını gir.
+
+Kendi derlediğin bir `.mkplugin` dosyasını **Ayarlar → Eklentiler → Geliştirici modu → Dosyadan yükle** ile kurabilirsin; bu kurulum *Doğrulanmamış* olarak işaretlenir.
+
+## Kullanım
+
+| Düğme | Ne yapar |
+|-------|----------|
+| **Bölge seç** | Ekranda okunacak dikdörtgeni çizdirir. Bölge kaydedilir; bir sonraki açılışta yeniden seçmen gerekmez. |
+| **Başlat** | Bölgeyi okuyup çevirmeye başlar. Durum satırında `Çalışıyor · 800×200` görünür. |
+| **Durdur** | Okumayı durdurur ve çeviriyi gizler. Oyun kapanınca kendiliğinden durur. |
+| **Bölgeyi oku (test)** | Bölgedeki metni çevirmeden bir kez okur ve gösterir. Bölgenin doğru seçildiğini ve OCR'ın metni okuyabildiğini denemek için. |
+
+**Oyun açılınca başlat** açıksa ve kayıtlı bir bölge varsa, Makine'den bir oyun başladığında okuma kendiliğinden başlar.
+
+Çeviri alınamazsa (anahtar yok ya da geçersiz, kota doldu, internet yok) bir kez hata bildirimi çıkar ve çeviri yerine okunan özgün metin gösterilir.
 
 ## Ayarlar
 
-| Ayar | Tur | Varsayilan | Aciklama |
+| Ayar | Tür | Varsayılan | Açıklama |
 |------|-----|------------|----------|
-| OCR Aktif | Toggle | Kapali | Her acilista kapali, elle acilir |
-| Kaynak Dil | Secim | Ingilizce | en, ja, ko, zh, de, fr, es, ru |
-| Hedef Dil | Secim | Turkce | tr, en, de, fr, es, ru |
-| Ceviri Motoru | Secim | GPT | gpt, deepl, google |
-| API Anahtari | Metin | -- | Secilen motorun API anahtari |
-| GPT Modeli | Secim | gpt-4o-mini | gpt-4o-mini, gpt-4o, gpt-4-turbo |
-| Yakalama Yontemi | Secim | Otomatik | auto, dxgi, gdi |
-| OCR Araligi | Secim | 2000ms | 500, 1000, 2000, 3000, 5000 ms |
+| Çeviri servisi | Seçim | OpenAI | OpenAI, DeepL ya da Google Cloud Translation |
+| API anahtarı | Gizli | — | Seçili servisin anahtarı. Windows'ta şifreli (DPAPI) saklanır, bir daha gösterilmez. |
+| OpenAI modeli | Metin | `gpt-4.1-mini` | Yalnız OpenAI için. Hesabında açık olan herhangi bir sohbet modeli. |
+| Kaynak dil | Seçim | İngilizce | OCR modeli şimdilik yalnız İngilizce okur. |
+| Hedef dil | Seçim | Türkçe | Türkçe, İngilizce, Almanca, Fransızca, İspanyolca, Rusça |
+| Okuma aralığı (ms) | Sayı | 1000 | 250–10000. Görüntüsü değişmeyen bölge yeniden okunmaz. |
+| Özgün metni de göster | Aç/kapa | Kapalı | Çevirinin yanında okunan İngilizce metni de gösterir. |
+| Oyun açılınca başlat | Aç/kapa | Kapalı | Kayıtlı bölge varsa oyun başlayınca okumaya başlar. |
 
-## Gelistirme
+DeepL'in ücretsiz anahtarları (`:fx` ile biten) `api-free.deepl.com`'a, diğerleri `api.deepl.com`'a gider.
+
+## İzinler ve gizlilik
+
+| İzin | Neden |
+|------|-------|
+| Ekranı okuma (`screen-capture`) | Seçtiğin bölgenin görüntüsü bilgisayarında okunur; görüntü hiçbir yere gönderilmez. |
+| İnternet (`network`) | Yalnız bölgeden okunan **metin** seçtiğin çeviri servisine gider. |
+| Ekran üstü gösterim (`overlay`) | Çeviri Makine'nin kaplamasıyla oyunun üstünde gösterilir; bölge seçimi de onunla yapılır. |
+
+Eklenti oyunun dosyalarına ve sürecine dokunmaz; hile korumalı oyunlarda da yalnız ekranı okur.
+
+## Sınırlamalar
+
+- OCR yalnız İngilizce (Latin harfleri, aksansız) metni okur.
+- Oyunun kendi tam ekran modu bazı ekran kartlarında yakalanamayabilir; öyleyse oyunu *kenarlıksız pencere* kipine al.
+- Döndürülmüş monitörlerde ve iki monitöre taşan bölgelerde daha yavaş GDI yakalaması kullanılır.
+
+---
+
+## Geliştirme
+
+Eklenti, Makine eklenti ABI 2'yi kullanır: tek bir `makine_plugin_entry` dışa aktarımı, JSON yükler, ayrı bir `makine-plugin-host.exe` sürecinde çalışma. Ayrıntılar: Makine-Launcher deposunda [`docs/plugins/README.md`](https://github.com/MakineCeviri/Makine-Launcher/blob/dev/docs/plugins/README.md).
 
 ### Gereksinimler
-- CMake 3.25+
-- C++23 derleyici (MSVC 2022 veya MinGW GCC 13.1+)
-- Windows 10/11 SDK
+
+- CMake 3.25+, C++20 derleyici: MinGW-w64 GCC 13+ ya da MSVC 2022+
+- Python 3.10+, `pip install zstandard` (paketleme), 7-Zip ya da `pip install py7zr` (OCR çalışma zamanını açmak için)
 
 ### Derleme
+
 ```bash
-mkdir build && cd build
-cmake .. -G Ninja
-cmake --build .
+python tools/fetch_ocr.py          # OCR motoru + modeller → .cache/ocr (SHA-256 sabitli)
+cmake -B build -G Ninja
+cmake --build build                # → build/package/
+cmake --build build --target pack  # → build/org.makineceviri.live-<sürüm>.mkplugin
 ```
 
-### Paketleme
+`build/package/` eklentinin kurulmuş hâlidir: `manifest.json`, `bin/makine-live.dll`, `bin/RapidOcrOnnx.dll`, `models/`, `licenses/`. OCR dosyaları indirilmeden de derlenir, ama eklenti o hâliyle başlamayı reddeder; `pack` hedefi de durur. İkili dosyalar ve modeller git'e girmez.
+
+### Makine olmadan çalıştırma
+
+`tools/plugin_dev.py` eklentiyi gerçek `makine-plugin-host.exe` içinde çalıştırır ve launcher'ın yerine geçer (bölge seçimine `--region` ile cevap verir):
+
 ```bash
-python makine-pack.py build/release -o makine-live.makine
+python tools/plugin_dev.py build/package --host <Makine klasörü>/makine-plugin-host.exe \
+    --region 100,100,800,200 --invoke pickRegion --invoke readOnce
 ```
 
-`makine-pack.py` aracini [Makine-LauncherPlugin-Template](https://github.com/MakineCeviri/Makine-LauncherPlugin-Template) deposundan edinebilirsiniz.
+`--invoke` vermezsen komutları standart girdiden okur: `start`, `stop`, `!game.stopped {}`, `quit`. Ayarlar `--set provider=deepl --set apiKey=...` ile verilir.
 
-## Proje Yapisi
+### Proje yapısı
 
 ```
-|- manifest.json          -- Eklenti meta verileri ve ayar tanimlari
-|- CMakeLists.txt         -- Derleme yapilandirmasi
-|- src/
-|   |- plugin.cpp         -- C ABI giris noktasi (disa aktarilan fonksiyonlar)
-|   |- live_core.cpp      -- Pipeline koordinatoru (cache, hash, ceviri)
-|   |- capture.h/cpp      -- Ekran yakalama (DXGI + GDI)
-|   |- ocr.h              -- OCR motor arayuzu (soyut sinif)
-|   |- ocr_rapid.h/cpp    -- RapidOcrOnnx.dll sarmalayici
-|   |- translator.h/cpp   -- Ceviri motorlari (GPT, DeepL, Google)
-|   +- settings.h         -- Anahtar=deger ayar kaliciligi
-+- include/
-    +- makine/plugin/     -- Plugin SDK basliklari
+manifest.json              eklenti bildirimi (şema 2): izinler, ayarlar, düğmeler, olaylar
+src/plugin.cpp             ABI girişi: initialize / invoke / onEvent / shutdown
+src/worker.h/.cpp          yakalama → OCR → çeviri → kaplama döngüsü; tek iş parçacığı
+src/capture.h/.cpp         DXGI Desktop Duplication, yedek olarak GDI BitBlt
+src/ocr_rapid.h/.cpp       RapidOcrOnnx.dll sarmalayıcısı
+src/translator.h/.cpp      OpenAI / DeepL / Google, WinHTTP
+include/makine/plugin/     ABI başlıkları (Makine-Launcher'dan birebir kopya)
+tools/fetch_ocr.py         OCR motoru ve modellerini indirir, doğrular
+tools/plugin_dev.py        eklentiyi Makine olmadan çalıştırır (launcher'dan kopya)
+tools/plugin_registry.py   .mkplugin paketler (launcher'dan kopya)
+licenses/NOTICE.txt        pakete giren üçüncü taraf bileşenler
 ```
 
-## Bagimliliklar (runtime)
+### Üçüncü taraf bileşenler
 
-Bu dosyalar plugin dizinine dahil edilmelidir:
-- `RapidOcrOnnx.dll` -- OCR motoru (prebuilt)
-- `onnxruntime.dll` -- ONNX Runtime
-- `models/` -- PaddleOCR model dosyalari
+| Bileşen | Lisans |
+|---------|--------|
+| [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) 1.2.3 | Apache-2.0 |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) 1.15.1 (RapidOcrOnnx.dll içinde) | MIT |
+| [OpenCV](https://github.com/opencv/opencv) 4.8.1 (RapidOcrOnnx.dll içinde) | Apache-2.0 |
+| [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) modelleri, [RapidOCR](https://github.com/RapidAI/RapidOCR) ONNX dönüşümleri | Apache-2.0 |
+| [nlohmann/json](https://github.com/nlohmann/json) 3.12.0 | MIT |
 
-## Katkida Bulunma
-
-1. Fork edin
-2. Feature branch olusturun (`feat/yeni-ozellik`)
-3. Degisikliklerinizi commit edin
-4. Pull Request acin
+Lisans metinleri paketin `licenses/` klasöründedir.
 
 ## Lisans
 
-[GPL-3.0](LICENSE)
+[AGPL-3.0 + Commons Clause](LICENSE) · Lisans veren: Makine Çeviri

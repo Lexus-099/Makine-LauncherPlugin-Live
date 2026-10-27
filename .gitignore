@@ -21,6 +21,14 @@ Makefile
 *.ilk
 *.exp
 *.bmp
+__pycache__/
+
+# Packages, OCR runtime and models (tools/fetch_ocr.py downloads them)
+*.mkplugin
+*.makine
+*.onnx
+*.7z
+.dev-data/
 
 # Logs
 *.log
@@ -37,7 +45,7 @@ Makefile
 Thumbs.db
 Desktop.ini
 
-# Cache
+# Cache (.cache/ocr: tools/fetch_ocr.py)
 .cache/
 
 # Claude
