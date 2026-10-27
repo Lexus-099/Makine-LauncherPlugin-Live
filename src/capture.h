@@ -3,64 +3,58 @@
 
 #pragma once
 
-#include <cstdint>
-#include <vector>
-#include <string>
+#include "config.h"
 
-#ifdef _WIN32
-// Forward declarations for DXGI Desktop Duplication
+#include <windows.h>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
 struct ID3D11Device;
 struct ID3D11DeviceContext;
+struct ID3D11Texture2D;
 struct IDXGIOutputDuplication;
-#endif
 
 namespace live {
 
-struct CapturedFrame {
-    std::vector<uint8_t> pixels;  // BGRA format
+struct Frame {
+    std::vector<uint8_t> bgra;   // top-down, 4 bytes per pixel
     int width = 0;
     int height = 0;
-    uint64_t timestamp = 0;
 };
 
-struct CaptureRegion {
-    int x = 0, y = 0, width = 0, height = 0;
-};
-
-enum class CaptureMethod {
-    Auto,
-    DXGI,
-    GDI,
-};
-
-// Screen capture interface
+/// Screen capture: DXGI Desktop Duplication of the monitor that holds the region
+/// (also sees borderless and most fullscreen games), BitBlt on the screen DC when
+/// DXGI is unavailable or the region spans monitors. Not thread-safe; the worker
+/// thread owns it.
 class ScreenCapture {
 public:
-    bool init(CaptureMethod method = CaptureMethod::Auto);
-    void shutdown();
+    ScreenCapture() = default;
+    ~ScreenCapture();
+    ScreenCapture(const ScreenCapture&) = delete;
+    ScreenCapture& operator=(const ScreenCapture&) = delete;
 
-    bool captureRegion(void* windowHandle, CaptureRegion region, CapturedFrame& out);
-    bool captureFullWindow(void* windowHandle, CapturedFrame& out);
-
-    CaptureMethod activeMethod() const { return m_method; }
-    const std::string& lastError() const { return m_error; }
+    /// `region` in physical virtual-desktop pixels.
+    bool grab(const Region& region, Frame& out, std::string& error);
 
 private:
-    bool initDXGI();
-    bool initGDI();
-    bool captureDXGI(void* hwnd, CaptureRegion region, CapturedFrame& out);
-    bool captureGDI(void* hwnd, CaptureRegion region, CapturedFrame& out);
-    void shutdownDXGI();
+    bool grabDxgi(const Region& region, Frame& out);
+    bool openOutput(const Region& region);
+    void closeOutput();
 
-    CaptureMethod m_method = CaptureMethod::Auto;
-    bool m_initialized = false;
-    std::string m_error;
+    ID3D11Device* m_device = nullptr;
+    ID3D11DeviceContext* m_context = nullptr;
+    IDXGIOutputDuplication* m_dup = nullptr;
+    ID3D11Texture2D* m_staging = nullptr;
+    int m_stagingWidth = 0, m_stagingHeight = 0;
+    RECT m_output{};               // desktop rectangle of the duplicated monitor
+    ULONGLONG m_retryDxgiAt = 0;   // after a failed open, GDI until then
 
-#ifdef _WIN32
-    ID3D11Device* m_d3dDevice = nullptr;
-    ID3D11DeviceContext* m_d3dContext = nullptr;
-    IDXGIOutputDuplication* m_dxgiDup = nullptr;
-#endif
+    // DXGI hands out a frame only when the screen changed; the last copy answers
+    // for an unchanged screen.
+    Frame m_last;
+    Region m_lastRegion;
 };
 
 } // namespace live

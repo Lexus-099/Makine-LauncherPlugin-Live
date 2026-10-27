@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: "3.12"
+
+      # zstandard for the packer; py7zr in case 7-Zip is missing from the image.
+      - name: Install the tools' dependencies
+        run: python -m pip install zstandard py7zr
+
+      # Every file is pinned by SHA-256 in tools/fetch_ocr.py, so its hash is the key.
+      - uses: actions/cache@v6
+        with:
+          path: .cache/ocr
+          key: ocr-${{ hashFiles('tools/fetch_ocr.py') }}
+
+      - name: Fetch the OCR runtime and models
+        run: python tools/fetch_ocr.py
+
+      # No -G: CMake picks the newest Visual Studio on the runner (MSVC, x64), so
+      # no developer-prompt setup and no Ninja install is needed.
+      - name: Configure
+        run: cmake -B build -A x64 "-DPython3_EXECUTABLE=${{ steps.python.outputs.python-path }}"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Pack
+        run: cmake --build build --config Release --target pack
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mkplugin
+          path: build/*.mkplugin
+          if-no-files-found: error

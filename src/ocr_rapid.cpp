@@ -2,214 +2,158 @@
 // Copyright (c) 2026 Makine Çeviri. Commons Clause applies — see LICENSE.
 
 #include "ocr_rapid.h"
-#include <cstring>
-#include <cstdio>
-#include <fstream>
-#include <filesystem>
-#include <sstream>
 
-namespace fs = std::filesystem;
+#include "capture.h"
+#include "winutil.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace live {
 
-bool RapidOcrEngine::init(const std::string& dataPath)
+namespace {
+
+// Relative to the plugin folder. tools/fetch_ocr.py downloads these; keep the two
+// lists in step.
+constexpr const char* kRuntime = "bin\\RapidOcrOnnx.dll";
+constexpr const char* kDetModel = "models\\en_PP-OCRv3_det_mobile.onnx";            // text detection
+constexpr const char* kClsModel = "models\\ch_ppocr_mobile_v2.0_cls_mobile.onnx";   // text direction
+constexpr const char* kRecModel = "models\\en_PP-OCRv4_rec_mobile.onnx";            // English recognition
+constexpr const char* kKeys = "models\\en_dict.txt";                                // its character set
+constexpr const char* kImageName = "ocr-input.bmp";                                 // in the data folder
+
+// OCR_PARAM of OcrLiteCApi.h. RapidOcrOnnx replaces a zero field with its default.
+struct OcrParam {
+    int padding;
+    int maxSideLen;
+    float boxScoreThresh;
+    float boxThresh;
+    float unClipRatio;
+    int doAngle;
+    int mostAngle;
+};
+
+const std::string kReinstall = " Eklentiyi kaldırıp yeniden kurun.";
+
+std::wstring currentDirectory()
 {
-    if (m_ready) return true;
-    m_dataPath = dataPath;
+    std::wstring dir(GetCurrentDirectoryW(0, nullptr), L'\0');
+    dir.resize(GetCurrentDirectoryW(static_cast<DWORD>(dir.size()), dir.data()));
+    return dir;
+}
 
-    // Normalize path separators
-    std::string dllDir = dataPath;
-    for (auto& c : dllDir) if (c == '/') c = '\\';
+bool writeBmp(const std::wstring& path, const Frame& f)
+{
+    const uint32_t pixels = static_cast<uint32_t>(f.bgra.size());
+    std::vector<uint8_t> file(54 + f.bgra.size());
+    const auto put32 = [&](size_t at, uint32_t v) { std::memcpy(file.data() + at, &v, 4); };
+    file[0] = 'B';
+    file[1] = 'M';
+    put32(2, 54 + pixels);
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, static_cast<uint32_t>(f.width));
+    put32(22, static_cast<uint32_t>(-f.height));   // negative: rows run top-down
+    file[26] = 1;                                   // planes
+    file[28] = 32;                                  // bits per pixel, BI_RGB
+    put32(34, pixels);
+    std::copy(f.bgra.begin(), f.bgra.end(), file.begin() + 54);
+    return writeFile(path, file.data(), file.size());
+}
 
-    // Find plugin's own directory (where .makine was extracted)
-    // RapidOcrOnnx.dll lives next to the plugin DLL, not in dataPath
-    static const char s_anchor = 0; // address anchor for GetModuleHandleEx
-    std::string pluginDir;
-    {
-        char modulePath[MAX_PATH]{};
-        HMODULE hSelf = nullptr;
-        GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            &s_anchor,
-            &hSelf);
-        if (hSelf) {
-            GetModuleFileNameA(hSelf, modulePath, MAX_PATH);
-            pluginDir = modulePath;
-            auto sep = pluginDir.find_last_of("\\/");
-            if (sep != std::string::npos) pluginDir = pluginDir.substr(0, sep);
+} // namespace
+
+RapidOcr::~RapidOcr()
+{
+    if (m_handle && m_destroy) m_destroy(m_handle);
+    // No FreeLibrary: ONNX Runtime keeps a thread pool, and the host process ends
+    // right after the plugin's shutdown anyway.
+}
+
+MakineStatus RapidOcr::load(const std::wstring& pluginDir, const std::wstring& workDir, std::string& error)
+{
+    for (const char* file : {kRuntime, kDetModel, kClsModel, kRecModel, kKeys}) {
+        if (!fileExists(pluginDir + L"\\" + widen(file))) {
+            error = (file == kRuntime ? "OCR motoru bulunamadı (" : "OCR modeli eksik (") + std::string(file) + ")."
+                    + kReinstall;
+            return MAKINE_E_NOT_FOUND;
         }
     }
 
-    // Search order: plugin dir → data dir → system DLL search path
-    m_hDll = nullptr;
-    if (!pluginDir.empty())
-        m_hDll = LoadLibraryA((pluginDir + "\\RapidOcrOnnx.dll").c_str());
-    if (!m_hDll)
-        m_hDll = LoadLibraryA((dllDir + "\\RapidOcrOnnx.dll").c_str());
-    if (!m_hDll)
-        m_hDll = LoadLibraryA("RapidOcrOnnx.dll");
-    if (!m_hDll) {
-        m_error = "Cannot load RapidOcrOnnx.dll (error " + std::to_string(GetLastError()) + ")";
-        return false;
+    // Full path, and only the DLL's own folder plus System32 for its imports: no
+    // PATH or current-directory lookup that another file could answer.
+    const std::wstring dll = pluginDir + L"\\" + widen(kRuntime);
+    m_dll = LoadLibraryExW(dll.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!m_dll) {
+        error = "OCR motoru yüklenemedi (Windows hata kodu " + std::to_string(GetLastError()) + ")." + kReinstall;
+        return MAKINE_E_FAILED;
+    }
+    const auto init = reinterpret_cast<InitFn>(reinterpret_cast<void*>(GetProcAddress(m_dll, "OcrInit")));
+    m_detect = reinterpret_cast<DetectFn>(reinterpret_cast<void*>(GetProcAddress(m_dll, "OcrDetect")));
+    m_getLen = reinterpret_cast<GetLenFn>(reinterpret_cast<void*>(GetProcAddress(m_dll, "OcrGetLen")));
+    m_getResult = reinterpret_cast<GetResultFn>(reinterpret_cast<void*>(GetProcAddress(m_dll, "OcrGetResult")));
+    m_destroy = reinterpret_cast<DestroyFn>(reinterpret_cast<void*>(GetProcAddress(m_dll, "OcrDestroy")));
+    if (!init || !m_detect || !m_getLen || !m_getResult || !m_destroy) {
+        error = "OCR motoru beklenen sürüm değil (RapidOcrOnnx C API eksik)." + kReinstall;
+        return MAKINE_E_FAILED;
     }
 
-    // Resolve C API functions
-    m_fnInit      = reinterpret_cast<OcrInitFn>(GetProcAddress(m_hDll, "OcrInit"));
-    m_fnDetect    = reinterpret_cast<OcrDetectFn>(GetProcAddress(m_hDll, "OcrDetect"));
-    m_fnGetLen    = reinterpret_cast<OcrGetLenFn>(GetProcAddress(m_hDll, "OcrGetLen"));
-    m_fnGetResult = reinterpret_cast<OcrGetResultFn>(GetProcAddress(m_hDll, "OcrGetResult"));
-    m_fnDestroy   = reinterpret_cast<OcrDestroyFn>(GetProcAddress(m_hDll, "OcrDestroy"));
-
-    if (!m_fnInit || !m_fnDetect || !m_fnGetLen || !m_fnGetResult || !m_fnDestroy) {
-        m_error = "RapidOcrOnnx.dll missing required exports";
-        FreeLibrary(m_hDll);
-        m_hDll = nullptr;
-        return false;
+    // Relative names from inside the plugin folder are ASCII wherever Makine is
+    // installed (C:\Users\Şükrü\…); see the class comment.
+    const std::wstring previous = currentDirectory();
+    if (!SetCurrentDirectoryW(pluginDir.c_str())) {
+        error = "Eklenti klasörüne erişilemedi (" + std::to_string(GetLastError()) + ").";
+        return MAKINE_E_FAILED;
     }
-
-    // Initialize OCR with model paths
-    // Search: plugin dir/models → data dir/models
-    std::string modelsDir = dllDir + "\\models";
-    if (!pluginDir.empty()) {
-        std::string tryDir = pluginDir + "\\models";
-        DWORD attr = GetFileAttributesA(tryDir.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            modelsDir = tryDir;
-    }
-    std::string detModel = modelsDir + "\\ch_PP-OCRv3_det_infer.onnx";
-    std::string clsModel = modelsDir + "\\ch_ppocr_mobile_v2.0_cls_infer.onnx";
-    std::string recModel = modelsDir + "\\ch_PP-OCRv3_rec_infer.onnx";
-    std::string keysPath = modelsDir + "\\ppocr_keys_v1.txt";
-
-    m_handle = m_fnInit(detModel.c_str(), clsModel.c_str(), recModel.c_str(), keysPath.c_str(), 4);
+    // Leave cores to the game: inter-op threads only; ONNX Runtime sizes the rest.
+    const int threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 4u));
+    m_handle = init(kDetModel, kClsModel, kRecModel, kKeys, threads);
+    SetCurrentDirectoryW(previous.c_str());
     if (!m_handle) {
-        m_error = "OcrInit failed — check model files in " + modelsDir;
+        error = "OCR motoru başlatılamadı.";
+        return MAKINE_E_FAILED;
+    }
+    m_workDir = workDir;
+    return MAKINE_OK;
+}
+
+bool RapidOcr::recognize(const Frame& frame, std::string& text, std::string& error)
+{
+    text.clear();
+    if (!m_handle) {
+        error = "OCR motoru hazır değil";
         return false;
     }
-
-    m_ready = true;
+    if (frame.width <= 0 || frame.height <= 0
+        || frame.bgra.size() != static_cast<size_t>(frame.width) * frame.height * 4) {
+        error = "boş ekran görüntüsü";
+        return false;
+    }
+    if (!writeBmp(m_workDir + L"\\" + widen(kImageName), frame)) {
+        error = "OCR görüntüsü yazılamadı (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    // The image is opened by a relative name too. Only this thread uses the
+    // current directory once the plugin runs.
+    if (!SetCurrentDirectoryW(m_workDir.c_str())) {
+        error = "eklenti veri klasörüne erişilemedi (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    OcrParam param{50, 1024, 0.5f, 0.3f, 1.6f, 1, 1};
+    // FALSE means "no text": RapidOcrOnnx then keeps the previous result, so it is
+    // not read.
+    if (!m_detect(m_handle, "", kImageName, &param)) return true;
+    const int len = m_getLen(m_handle);   // text size + 1
+    if (len <= 1) return true;
+    std::string buf(static_cast<size_t>(len), '\0');
+    m_getResult(m_handle, buf.data(), len);
+    buf.resize(std::strlen(buf.c_str()));
+    text = std::move(buf);
     return true;
-}
-
-void RapidOcrEngine::shutdown()
-{
-    if (m_handle && m_fnDestroy) {
-        m_fnDestroy(m_handle);
-        m_handle = nullptr;
-    }
-    if (m_hDll) {
-        FreeLibrary(m_hDll);
-        m_hDll = nullptr;
-    }
-    m_fnInit = nullptr;
-    m_fnDetect = nullptr;
-    m_fnGetLen = nullptr;
-    m_fnGetResult = nullptr;
-    m_fnDestroy = nullptr;
-    m_ready = false;
-}
-
-std::vector<OcrBox> RapidOcrEngine::recognize(
-    const uint8_t* pixels, int width, int height)
-{
-    if (!m_ready || !m_handle) return {};
-
-    // Save BGRA pixels as BMP to temp file (RapidOCR reads from file)
-    std::string bmpDir = m_dataPath;
-    for (auto& c : bmpDir) if (c == '/') c = '\\';
-    fs::create_directories(bmpDir);
-
-    std::string bmpPath = bmpDir + "\\capture.bmp";
-    if (!saveBmp(pixels, width, height, bmpPath)) {
-        m_error = "Failed to save capture BMP";
-        return {};
-    }
-
-    // OcrDetect expects imgPath=directory (with trailing \) and imgName=filename
-    std::string imgDir = bmpDir + "\\";
-    std::string imgName = "capture.bmp";
-
-    // Set OCR parameters
-    struct {
-        int padding;
-        int maxSideLen;
-        float boxScoreThresh;
-        float boxThresh;
-        float unClipRatio;
-        int doAngle;
-        int mostAngle;
-    } param = {50, 1024, 0.6f, 0.3f, 2.0f, 1, 1};
-
-    // Run OCR
-    char ok = m_fnDetect(m_handle, imgDir.c_str(), imgName.c_str(), &param);
-    if (!ok) {
-        m_error = "OcrDetect failed";
-        return {};
-    }
-
-    // Get result
-    int resultLen = m_fnGetLen(m_handle);
-    if (resultLen <= 0) return {};
-
-    std::string result(resultLen, '\0');
-    m_fnGetResult(m_handle, result.data(), resultLen);
-
-    // Parse result text — each line is a detected text with box info
-    std::vector<OcrBox> boxes;
-    std::istringstream iss(result);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (line.empty() || line[0] == '-') continue;
-        // RapidOCR output format: text lines mixed with box coordinates
-        // Simple parse: extract non-empty text lines
-        if (!line.empty() && line.find("boxCount") == std::string::npos
-            && line.find("×") == std::string::npos
-            && line.find("score") == std::string::npos) {
-            OcrBox box;
-            box.text = line;
-            box.confidence = 0.9f;
-            box.x = 0; box.y = 0;
-            box.width = width; box.height = 0;
-            boxes.push_back(std::move(box));
-        }
-    }
-
-    return boxes;
-}
-
-bool RapidOcrEngine::saveBmp(const uint8_t* bgra, int w, int h, const std::string& path)
-{
-    const int rowSize = w * 4;
-    const int imageSize = rowSize * h;
-    const int fileSize = 54 + imageSize;
-
-    std::ofstream ofs(path, std::ios::binary);
-    if (!ofs) return false;
-
-    // BMP Header
-    uint8_t bmpHeader[14] = {};
-    bmpHeader[0] = 'B'; bmpHeader[1] = 'M';
-    std::memcpy(bmpHeader + 2, &fileSize, 4);
-    int dataOffset = 54;
-    std::memcpy(bmpHeader + 10, &dataOffset, 4);
-    ofs.write(reinterpret_cast<char*>(bmpHeader), 14);
-
-    // DIB Header
-    uint8_t dibHeader[40] = {};
-    int dibSize = 40;
-    std::memcpy(dibHeader, &dibSize, 4);
-    std::memcpy(dibHeader + 4, &w, 4);
-    int negH = -h;
-    std::memcpy(dibHeader + 8, &negH, 4);
-    uint16_t planes = 1, bpp = 32;
-    std::memcpy(dibHeader + 12, &planes, 2);
-    std::memcpy(dibHeader + 14, &bpp, 2);
-    std::memcpy(dibHeader + 20, &imageSize, 4);
-    ofs.write(reinterpret_cast<char*>(dibHeader), 40);
-
-    // Pixel data
-    ofs.write(reinterpret_cast<const char*>(bgra), imageSize);
-    return ofs.good();
 }
 
 } // namespace live
